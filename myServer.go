@@ -5,22 +5,26 @@ import (
 	//"errors"
 	"fmt"
 	"github.com/gorilla/mux"
-	"github.com/wilke/webserver/Frame"
+	"github.com/wilke/webserver/CollectionJson"
 	"github.com/wilke/webserver/MICCoM"
+	//"github.com/wilke/webserver/MICCoM/Experiment"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 )
 
-type Item Frame.Item
-type Collection Frame.Collection
+type Item CollectionJson.Item
+type Collection CollectionJson.Collection
 
-var url string = ""
-var baseURL string = ""
+var myURL url.URL
+var baseURL string
+var miccom MICCoM.MICCoM
 
 func init() {
-	url = "http://localhost:8000"
-	baseURL = url
+	myURL.Host = "http://localhost:8000"
+	baseURL = myURL.Host
+	miccom.New("", "", "", "", "")
 	// i = new(Item)
 	// 	c = new(Frame.Collection)
 	// 	fmt.Printf("%+v\n", c)
@@ -30,13 +34,13 @@ func init() {
 func main() {
 
 	fmt.Printf("%s\n", "Starting Server")
-
+	fmt.Printf("Miccom:\n%+v\n", miccom)
 	r := mux.NewRouter()
 	// Routes consist of a path and a handler function.
 
-	r.HandleFunc("/", YourHandler)
+	r.HandleFunc("/", BaseHandler)
 	r.HandleFunc("/experiment", ExperimentHandler)
-	r.HandleFunc("/experiment/{id:[a-z]*}", ExperimentHandler).Name("experiment")
+	r.HandleFunc("/experiment/{id:[a-zA-Z]*}", ExperimentHandler).Name("experiment")
 	r.HandleFunc("/search", SearchHandler)
 	r.HandleFunc("/search/{path:.+}", SearchHandler)
 	r.HandleFunc("/register", RegisterHandler)
@@ -45,6 +49,7 @@ func main() {
 	r.HandleFunc("/download", DownloadHandler)
 	r.HandleFunc("/transfer", TransferHandler)
 	r.HandleFunc("/transfer/{id}", SearchHandler)
+	r.HandleFunc("/test", GetExperimentHandler)
 
 	// Bind to a port and pass our router in
 	err := http.ListenAndServe(":8000", r)
@@ -54,10 +59,49 @@ func main() {
 	fmt.Printf("%s\n", "Started Server at port 8000")
 }
 
+func GetExperimentHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Printf("%+v\n", miccom)
+	MICCoM.GetExperiment(w, r, miccom)
+	//miccom.GetExperiment(w, r, miccom)
+}
+
 func YourHandler(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("MICCoM!\n"))
 	//fmt.Printf("%+v\n", c)
 	fmt.Printf("%s\n", "Test")
+}
+
+func BaseHandler(w http.ResponseWriter, r *http.Request) {
+
+	c := new(CollectionJson.CollectionJson)
+
+	//q := CollectionJson.Query{}
+
+	experiment_query := CollectionJson.Query{
+		Href:   myURL.Host + "/experiment",
+		Rel:    "experiment",
+		Prompt: "Query definitions for experiment",
+		Data:   nil,
+	}
+
+	c.Collection.Queries = []CollectionJson.Query{experiment_query}
+
+	// Create json from collection
+	jb, err := c.ToJson()
+
+	// Send json
+	if err != nil {
+		println(jb)
+		w.Write([]byte(err.Error()))
+		http.Error(w, err.Error(), 500)
+	} else {
+		fmt.Printf("%s\n", jb)
+		fmt.Printf("%+v\n", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(jb))
+
+	}
+
 }
 
 func SearchHandler(w http.ResponseWriter, r *http.Request) {
@@ -80,11 +124,11 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	path := vars["path"]
 
-	href := url + "register" + "/" + path
+	href := myURL.Host + "/register" + "/" + path
 
-	item := Frame.Item{
+	item := CollectionJson.Item{
 		Href:  href,
-		Data:  []MICCoM.Experiment{}, //[]string{"Hallo", "Du"},
+		Data:  MICCoM.Experiment{}, //[]string{"Hallo", "Du"},
 		Links: "no links",
 		//Queries:  nil,
 		//Template: nil,
@@ -109,13 +153,13 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var list []MICCoM.Experiment
-	col := Frame.Collection{
+	col := CollectionJson.Collection{
 		Version: "1",
-		Href:    baseURL + r.URL.String(),
+		Href:    baseURL + r.URL.Path,
 		Items:   list,
 	}
 
-	nr := experiment.AddItem(&col)
+	nr := experiment.AddToItems(&col)
 
 	//list = col.Items.([]Frame.Item)
 	//col.Items = append(list, item)
@@ -123,9 +167,8 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("%+v\n", col.Items)
 	fmt.Printf("%+v\n", "Items: "+strconv.Itoa(nr))
 
-	register := Frame.Frame{
+	register := CollectionJson.CollectionJson{
 		Collection: col,
-		ID:         1,
 	}
 
 	println("Collection", register.Collection.Version)
@@ -145,6 +188,79 @@ func RegisterHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func ExperimentHandler(w http.ResponseWriter, r *http.Request) {
+
+	// Retrieve path and query parameters for experiment resource
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	// initialize r.Form for query parameters
+	r.ParseForm()
+
+	method := r.Method
+	switch {
+	default:
+		fmt.Printf("Found unsupported Method %s\n", r.Method)
+
+	case method == "GET":
+		fmt.Printf("Found Get\n")
+		MICCoM.GetExperiment(w, r, miccom)
+	case method == "POST":
+		fmt.Printf("Found POST\n")
+		c, err := miccom.CreateExperiment(r)
+		if err != nil {
+			miccom.SendError(w, err, 500)
+		} else {
+			fmt.Printf("Collection: %+v\n", c)
+			miccom.SendCollection(w, c)
+		}
+	}
+
+	return
+
+	// initialize experiment
+	experiment, err := MICCoM.NewExperiment(id)
+
+	if err != nil {
+		CollectionJson.SendError(w, err)
+		return
+		panic(err)
+	}
+
+	var list []MICCoM.Experiment
+	col := CollectionJson.Collection{
+		Version: "1",
+		Href:    baseURL + r.URL.String(),
+		Items:   list,
+	}
+
+	nr := experiment.AddToItems(&col)
+
+	//list = col.Items.([]Frame.Item)
+	//col.Items = append(list, item)
+
+	fmt.Printf("%+v\n", col.Items)
+	fmt.Printf("%+v\n", "Items: "+strconv.Itoa(nr))
+
+	frame := CollectionJson.CollectionJson{
+		Collection: col,
+	}
+
+	jb, err := json.Marshal(frame)
+	if err != nil {
+		println(jb)
+		w.Write([]byte(err.Error()))
+		http.Error(w, err.Error(), 500)
+	} else {
+		fmt.Printf("Json: %s\n", jb)
+		fmt.Printf("Last Error:  %+v\n", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(jb))
+
+	}
+
+}
+
+func OldExperimentHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Retrieve path and query parameters for experiment resource
 	vars := mux.Vars(r)
@@ -175,19 +291,19 @@ func ExperimentHandler(w http.ResponseWriter, r *http.Request) {
 	experiment, err := MICCoM.NewExperiment(id)
 
 	if err != nil {
-		Frame.SendError(w, err)
+		CollectionJson.SendError(w, err)
 		return
 		panic(err)
 	}
 
 	var list []MICCoM.Experiment
-	col := Frame.Collection{
+	col := CollectionJson.Collection{
 		Version: "1",
 		Href:    baseURL + r.URL.String(),
 		Items:   list,
 	}
 
-	nr := experiment.AddItem(&col)
+	nr := experiment.AddToItems(&col)
 
 	//list = col.Items.([]Frame.Item)
 	//col.Items = append(list, item)
@@ -195,9 +311,8 @@ func ExperimentHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Printf("%+v\n", col.Items)
 	fmt.Printf("%+v\n", "Items: "+strconv.Itoa(nr))
 
-	frame := Frame.Frame{
+	frame := CollectionJson.CollectionJson{
 		Collection: col,
-		ID:         1,
 	}
 
 	jb, err := json.Marshal(frame)
